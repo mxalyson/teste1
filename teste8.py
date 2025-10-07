@@ -5590,6 +5590,133 @@ class WorkingTradingBot:
             logger.logger.debug(f"Analysis error {symbol}: {e}")
             return None
 
+
+    def _get_account_balance(self) -> float:
+        """Obtém saldo da conta de forma simples"""
+        try:
+            balance = self.exchange.fetch_balance()
+            return float(balance.get('USDT', {}).get('free', 0))
+        except Exception as e:
+            logger.logger.debug(f"Balance fetch error: {e}")
+            return 0
+
+    def calculate_position_size(self, symbol: str, signal_strength: float = 0.5) -> float:
+        """Calcula tamanho da posição de forma conservadora"""
+        try:
+            balance = self._get_account_balance()
+            if balance <= 0:
+                return 0
+            
+            position_value = balance * AdvancedTradingConfig.MAX_POSITION_SIZE
+            ticker = self.exchange.fetch_ticker(symbol)
+            current_price = float(ticker['last'])
+            
+            if current_price <= 0:
+                return 0
+            
+            quantity = position_value / current_price
+            quantity = round(quantity, 3)
+            return quantity
+            
+        except Exception as e:
+            logger.logger.debug(f"Position size calc error: {e}")
+            return 0
+
+    def open_position_simple(self, symbol: str, signal_info: Dict) -> bool:
+        """Abre posição de trading"""
+        try:
+            can_trade, reason = self.risk_manager.can_trade()
+            if not can_trade:
+                logger.logger.info(f"⚠️ Cannot trade: {reason}")
+                return False
+            
+            if symbol in self.active_positions or len(self.active_positions) >= AdvancedTradingConfig.MAX_POSITIONS:
+                return False
+            
+            quantity = self.calculate_position_size(symbol, signal_info.get('confidence', 0.5))
+            if quantity <= 0:
+                return False
+            
+            sl_pct = AdvancedTradingConfig.MIN_STOP_LOSS_PCT
+            tp_pct = sl_pct * AdvancedTradingConfig.MIN_RISK_REWARD_RATIO
+            
+            signal = signal_info['signal']
+            entry_price = signal_info['price']
+            
+            if signal == 'LONG':
+                sl_price = entry_price * (1 - sl_pct)
+                tp_price = entry_price * (1 + tp_pct)
+                order = self.exchange.create_market_buy_order(symbol, quantity)
+            else:
+                sl_price = entry_price * (1 + sl_pct)
+                tp_price = entry_price * (1 - tp_pct)
+                order = self.exchange.create_market_sell_order(symbol, quantity)
+            
+            logger.logger.info(f"🚀 OPENED {symbol} {signal} @ ${entry_price:.4f}")
+            
+            trade_data = {
+                'symbol': symbol,
+                'signal': signal,
+                'entry_price': entry_price,
+                'quantity': quantity,
+                'stop_loss_price': sl_price,
+                'take_profit_price': tp_price,
+                'timestamp': datetime.now(),
+                'order_id': order.get('id'),
+                'reasons': signal_info.get('reasons', [])
+            }
+            
+            self.active_positions[symbol] = trade_data
+            self.symbol_cooldown[symbol] = time.time()
+            self.database.save_trade(trade_data)
+            
+            return True
+            
+        except Exception as e:
+            logger.logger.error(f"❌ Position error {symbol}: {e}")
+            return False
+
+    def check_positions(self):
+        """Verifica posições abertas"""
+        if not self.active_positions:
+            return
+        
+        try:
+            for symbol in list(self.active_positions.keys()):
+                try:
+                    positions = self.exchange.fetch_positions([symbol])
+                    for pos in positions:
+                        if pos['symbol'] == symbol:
+                            contracts = float(pos.get('contracts', 0))
+                            if contracts == 0:
+                                self.close_position(symbol, pos)
+                            break
+                except:
+                    continue
+        except Exception as e:
+            logger.logger.debug(f"Position check error: {e}")
+
+    def close_position(self, symbol: str, position_data: Dict):
+        """Fecha posição"""
+        try:
+            if symbol not in self.active_positions:
+                return
+                
+            trade_info = self.active_positions[symbol]
+            unrealized_pnl = float(position_data.get('unrealizedPnl', 0))
+            balance = self._get_account_balance()
+            pnl_pct = (unrealized_pnl / balance) if balance > 0 else 0
+            
+            self.risk_manager.register_trade_result(pnl_pct, symbol)
+            exit_price = position_data.get('markPrice', trade_info['entry_price'])
+            self.database.close_trade(symbol, exit_price, pnl_pct, unrealized_pnl, "AUTO")
+            
+            logger.logger.info(f"🔒 CLOSED {symbol} | P&L: ${unrealized_pnl:+.2f}")
+            del self.active_positions[symbol]
+            
+        except Exception as e:
+            logger.logger.error(f"❌ Close error: {e}")
+
     def run_working_cycle(self) -> int:
         """Ciclo de trading funcional"""
         positions_opened = 0
@@ -5624,13 +5751,10 @@ class WorkingTradingBot:
                         logger.logger.info(f"🎯 VALID SIGNAL: {symbol} {result['signal']} "
                                          f"(Score: {result['score']:.1f}, RSI: {result['rsi']:.1f})")
                         
-                        # Aqui você pode adicionar a lógica para abrir posição
-                        # success = self.open_position_simple(symbol, result)
-                        # if success:
-                        #    positions_opened += 1
-                        
-                        # Por enquanto, apenas logar os sinais válidos
-                        positions_opened += 0  # Remover quando implementar trading
+                        # Tentar abrir posição
+                        success = self.open_position_simple(symbol, result)
+                        if success:
+                            positions_opened += 1
                         
                 except Exception as e:
                     logger.logger.debug(f"Symbol analysis error {symbol}: {e}")
@@ -5644,13 +5768,14 @@ class WorkingTradingBot:
             logger.logger.error(f"❌ Cycle error: {e}")
             return 0
 
-    def run_continuous_analysis(self):
-        """Loop contínuo de análise apenas (sem trading)"""
+    def run_continuous_trading(self):
+        """Loop contínuo de trading ativo"""
         logger.logger.info(f"\n{'='*60}")
-        logger.logger.info("🔍 WORKING TRADING BOT - ANALYSIS MODE")
+        logger.logger.info("🚀 WORKING TRADING BOT - ACTIVE TRADING MODE")
         logger.logger.info("✅ Fixed technical indicators")
         logger.logger.info("✅ Reliable symbols only") 
         logger.logger.info("✅ Conservative signal criteria")
+        logger.logger.info("✅ Automatic position management")
         logger.logger.info(f"{'='*60}\n")
         
         cycle = 0
@@ -5662,19 +5787,21 @@ class WorkingTradingBot:
                 
                 logger.logger.info(f"\n[🔄 CYCLE #{cycle}] {datetime.now().strftime('%H:%M:%S')}")
                 
-                # Executar análise
-                signals_found = self.run_working_cycle()
+                # Verificar posições abertas
+                self.check_positions()
                 
-                if signals_found > 0:
-                    logger.logger.info(f"🎯 Found {signals_found} valid signals")
-                else:
-                    logger.logger.info("⏸️ No valid signals this cycle")
+                # Executar análise e tentar abrir posições
+                positions_opened = self.run_working_cycle()
+                
+                # Status
+                active_count = len(self.active_positions)
+                logger.logger.info(f"📊 Active positions: {active_count} | Opened this cycle: {positions_opened}")
                 
                 # Timing do ciclo
                 cycle_duration = time.time() - start_time
                 sleep_time = max(30, 120 - cycle_duration)  # 2 minutos entre ciclos
                 
-                logger.logger.info(f"⏱️ Next analysis in {sleep_time:.0f}s")
+                logger.logger.info(f"⏱️ Next cycle in {sleep_time:.0f}s")
                 time.sleep(sleep_time)
                 
         except KeyboardInterrupt:
@@ -5736,22 +5863,23 @@ def main():
             return
         
         print(f"\n{'='*60}")
-        print(f"🚀 WORKING TRADING BOT - FIXED VERSION")
+        print(f"🚀 WORKING TRADING BOT - ACTIVE TRADING ENABLED")
         print(f"{'='*60}")
         print(f"✅ Fixed technical indicators")
         print(f"✅ Reliable RSI calculation") 
         print(f"✅ Conservative analysis")
-        print(f"✅ Analysis mode only (no trading)")
+        print(f"✅ TRADING MODE ENABLED - Will open and close positions")
+        print(f"✅ Automatic stop-loss and take-profit")
         print(f"{'='*60}")
         
         # Testar indicadores primeiro
         test_indicators()
         
-        # Iniciar análise contínua
-        input("\nPress Enter to start continuous analysis...")
+        # Iniciar trading ativo
+        input("\nPress Enter to start active trading...")
         
         bot = WorkingTradingBot(testnet=True)
-        bot.run_continuous_analysis()
+        bot.run_continuous_trading()
         
     except KeyboardInterrupt:
         logger.logger.info("\n🛑 Bot stopped by user")
