@@ -36,22 +36,22 @@ class AdvancedTradingConfig:
     ATR_MULTIPLIER = 2.0
     
     # Take Profit mais realista
-    MIN_RISK_REWARD_RATIO = 2.5
+    MIN_RISK_REWARD_RATIO = 2.0  # Reduzido de 2.5 para 2.0
     MAX_TAKE_PROFIT_PCT = 0.06
     
     # Risk Management mais conservador
-    MAX_DAILY_LOSS = -0.03  # -3%
-    MAX_POSITION_SIZE = 0.01  # 1% por trade
-    MAX_POSITIONS = 2
-    MAX_CONSECUTIVE_LOSSES = 3
+    MAX_DAILY_LOSS = -0.05  # Aumentado de -3% para -5%
+    MAX_POSITION_SIZE = 0.02  # Aumentado de 1% para 2% por trade
+    MAX_POSITIONS = 3  # Aumentado de 2 para 3
+    MAX_CONSECUTIVE_LOSSES = 5  # Aumentado de 3 para 5
     
-    # Análise técnica mais rigorosa
-    MIN_SIGNAL_SCORE = 6.0
-    MIN_CONFIDENCE = 4.0
-    MIN_REASONS = 3
-    MIN_ADX = 20
-    MIN_VOLUME_RATIO = 1.2
-    MAX_RSI = 75
+    # Análise técnica mais flexível
+    MIN_SIGNAL_SCORE = 4.0  # Reduzido de 6.0 para 4.0
+    MIN_CONFIDENCE = 2.0  # Reduzido de 4.0 para 2.0
+    MIN_REASONS = 2  # Reduzido de 3 para 2
+    MIN_ADX = 15  # Reduzido de 20 para 15
+    MIN_VOLUME_RATIO = 1.    MAX_RSI = 80  # Aumentado de 75 para 80
+    MIN_RSI = 20  # Reduzido de 25 para 20 MAX_RSI = 75
     MIN_RSI = 25
     
     # Timeframes otimizados
